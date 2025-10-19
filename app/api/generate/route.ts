@@ -4,7 +4,7 @@ import OpenAI from 'openai';
 import prisma from '@/lib/prisma';
 
 const client = new OpenAI({
-  apiKey: "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",
+  apiKey: "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",
 });
 
 type MessageType = {
