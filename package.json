@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@pinecone-database/pinecone": "^6.1.2",
     "@prisma/client": "^6.17.1",
     "@prisma/extension-accelerate": "^2.0.2",
     "@types/express": "^5.0.3",
