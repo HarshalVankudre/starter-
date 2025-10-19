@@ -65,9 +65,14 @@ export async function POST(req: NextRequest) {
     const response = await client.responses.create({
       model: "gpt-4o-mini",
       input: fullContext,
+       tools: [
+        {
+            type: "file_search",
+            vector_store_ids: ["vs_68f21d90945481918f8292632e232657"],
+        },
+    ],
     });
 
-    // Save assistant message to database
     const assistantMessage = await prisma.message.create({
       data: {
         role: 'assistant',
