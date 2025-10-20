@@ -97,10 +97,9 @@ export async function POST(req: NextRequest) {
     const messages = await prisma.message.findMany({
       where: { conversationId },
       orderBy: { createdAt: 'asc' },
-      take: 15, // Keep last 15 messages for context
+      take: 15,
     });
 
-    // Build proper input with system instructions and conversation history
     let fullInput = '';
 
     // Add conversation history if exists
