@@ -2,10 +2,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
 import prisma from '@/lib/prisma';
+import dotenv from "dotenv";
+import * as path from "node:path";
 
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+dotenv.config({ path: path.resolve(process.cwd(), ".env"), override: true });
+
+const key = process.env.OPENAI_API_KEY?.trim();
+
+if (!key) {
+  throw new Error("❌ OPENAI_API_KEY is missing from .env file");
+}
+
+// Optional: Log partially to confirm
+console.log("Using API key starts with:", key.slice(0, 10));
+
+const client = new OpenAI({ apiKey: key });
 
 type MessageType = {
   id: string;
@@ -63,7 +74,7 @@ export async function POST(req: NextRequest) {
 
     // Get AI response
     const response = await client.responses.create({
-      model: "gpt-4o",
+      model: "gpt-4o-mini",
       input: fullContext,
        tools: [
         {
