@@ -5,7 +5,6 @@ import prisma from '@/lib/prisma';
 import dotenv from "dotenv";
 import * as path from "node:path";
 
-dotenv.config({ path: path.resolve(process.cwd(), ".env"), override: true });
 
 const key = process.env.OPENAI_API_KEY?.trim();
 
