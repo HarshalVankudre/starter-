@@ -9,7 +9,9 @@ const key = process.env.OPENAI_API_KEY?.trim();
 if (!key) {
   throw new Error("❌ OPENAI_API_KEY is missing from .env file");
 }
-const client = new OpenAI({ apiKey: "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\n" });
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
 type MessageType = {
   id: string;
