@@ -2,20 +2,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
 import prisma from '@/lib/prisma';
-import dotenv from "dotenv";
-import * as path from "node:path";
 
-
+// Validate API key - NEVER hardcode it!
 const key = process.env.OPENAI_API_KEY?.trim();
-
 if (!key) {
   throw new Error("❌ OPENAI_API_KEY is missing from .env file");
 }
 
-// Optional: Log partially to confirm
-console.log("Using API key starts with:", key.slice(0, 10));
-
 const client = new OpenAI({ apiKey: key });
+
 
 type MessageType = {
   id: string;
@@ -25,11 +20,57 @@ type MessageType = {
   createdAt: Date;
 };
 
+// System instructions for the assistant
+const SYSTEM_INSTRUCTIONS = `Du bist ein Experten-Dokumentenassistent, der umfassende, detaillierte Erklärungen liefert. Befolge diese Regeln strikt:
+
+HAUPTROLLE:
+- Deine Hauptaufgabe ist es, Fragen zu hochgeladenen Dokumenten mit MAXIMALER Detailtiefe zu beantworten
+- Liefere gründliche, tiefgehende und umfassende Erklärungen
+- Zitiere immer spezifische Informationen aus den Dokumenten mit exakten Details
+- Erläutere jeden Punkt ausführlich mit Beispielen, Kontext und unterstützenden Informationen
+
+ANTWORTLÄNGE & DETAILGRAD:
+- Strebe immer detaillierte, umfassende Antworten an (mindestens 200-300 Wörter, wenn angemessen)
+- Unterteile komplexe Themen in mehrere ausführliche Absätze
+- Erkläre Konzepte gründlich mit Hintergrundkontext
+- Füge relevante Beispiele, Statistiken und Spezifika aus den Dokumenten hinzu
+- Verwende mehrere Absätze, um jeden Aspekt der Frage vollständig zu untersuchen
+- Fasse nicht zusammen - erweitere und erläutere alle relevanten Punkte ausführlich
+
+INFORMATIONSPRIORITÄT:
+1. ZUERST: Durchsuche die hochgeladenen Dokumente gründlich nach ALLEN relevanten Informationen
+2. Falls in Dokumenten gefunden: Liefere eine ausführliche, detaillierte Antwort mit mehreren Zitaten
+3. Extrahiere und erkläre ALLE relevanten Details, nicht nur die Hauptpunkte
+4. Falls NICHT in Dokumenten: Sage klar "Diese Information befindet sich nicht in den hochgeladenen Dokumenten" und biete dann an, im Web nach umfassenden Informationen zu suchen
+
+ANTWORTSTRUKTUR:
+- Beginne mit einer direkten Antwort auf die Frage
+- Folge mit detaillierter Erklärung in mehreren Absätzen
+- Füge spezifische Zitate und Verweise aus Dokumenten hinzu
+- Ergänze Kontext, Hintergrund und verwandte Informationen
+- Verwende Aufzählungspunkte für Listen, aber erkläre jeden Punkt ausführlich
+- Zitiere immer Dokumentenquellen: "Laut [Dokumentenname], Abschnitt X..."
+- Schließe mit zusätzlichen relevanten Erkenntnissen oder Implikationen ab
+
+QUALITÄTSREGELN:
+- Erfinde NIEMALS Informationen oder halluziniere Fakten
+- Falls unsicher über ein bestimmtes Detail, sage explizit "Ich bin mir über diesen spezifischen Aspekt nicht sicher", liefere aber trotzdem eine detaillierte Antwort zu dem, was du weißt
+- Stelle bei Bedarf klärende Fragen, liefere aber dennoch eine detaillierte erste Antwort
+- Bevorzuge Tiefe gegenüber Kürze - umfassende Antworten sind besser als kurze
+
+WEBSUCHE-VERWENDUNG:
+- Verwende Websuche nur, wenn die Dokumentensuche nichts ergibt
+- Bei Verwendung der Websuche liefere detaillierte Ergebnisse mit mehreren Quellen
+- Sage klar: "Da dies nicht in den Dokumenten war, habe ich im Web gesucht und gefunden..."
+- Zitiere alle Webquellen ordnungsgemäß mit Kontext
+
+Merke: Umfassende, detaillierte Genauigkeit ist von höchster Bedeutung. Liefere so viele relevante Details wie möglich und bewahre dabei faktische Genauigkeit.`;
+
 export async function POST(req: NextRequest) {
   try {
     const { prompt, conversationId } = await req.json();
 
-    if (!prompt) {
+    if (!prompt?.trim()) {
       return NextResponse.json(
         { error: 'Prompt is required' },
         { status: 400 }
@@ -52,42 +93,54 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // Get conversation history from database
+    // Get recent conversation history (limit to prevent token overflow)
     const messages = await prisma.message.findMany({
       where: { conversationId },
       orderBy: { createdAt: 'asc' },
+      take: 15, // Keep last 15 messages for context
     });
 
-    // Build context from database messages
-    let fullContext = '';
+    // Build proper input with system instructions and conversation history
+    let fullInput = '';
 
+    // Add conversation history if exists
     if (messages.length > 1) {
-      fullContext = 'Previous conversation:\n';
-      messages.forEach((msg: MessageType) => {
-        fullContext += `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}\n`;
+      fullInput += '=== CONVERSATION HISTORY ===\n';
+      messages.slice(0, -1).forEach((msg: MessageType) => {
+        fullInput += `${msg.role.toUpperCase()}: ${msg.content}\n\n`;
       });
-      fullContext += '\nAssistant:';
-    } else {
-      fullContext = prompt;
+      fullInput += '=== END HISTORY ===\n\n';
     }
 
-    // Get AI response
+    // Add current user message
+    fullInput += `USER: ${prompt}\n\nASSISTANT:`;
+
+    // Call OpenAI Responses API with proper configuration
     const response = await client.responses.create({
-      model: "gpt-5-nano",
-      input: fullContext,
-       tools: [
+      model: "gpt-4o-mini", // Use gpt-4o or gpt-4o-mini for responses API
+      instructions: SYSTEM_INSTRUCTIONS, // System-level behavior instructions
+      input: fullInput,
+      temperature: 0.2, // Lower temperature = more focused and factual responses
+      max_output_tokens: 4096, // Allow longer, more detailed responses
+      tools: [
         {
-            type: "file_search",
-            vector_store_ids: ["vs_68f523d8f20081918a7a6e746e17bbbb"],
+          type: "file_search",
+          vector_store_ids: ["vs_68f523d8f20081918a7a6e746e17bbbb"],
         },
-         { type: "web_search" },
-    ],
+        {
+          type: "web_search",
+        },
+      ],
     });
 
+    // Extract the response text
+    const aiResponse = response.output_text || 'No response generated';
+
+    // Save assistant message to database
     const assistantMessage = await prisma.message.create({
       data: {
         role: 'assistant',
-        content: response.output_text,
+        content: aiResponse,
         conversationId,
       },
     });
@@ -100,11 +153,33 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      output: response.output_text,
+      output: aiResponse,
       messageId: assistantMessage.id,
+      // Optional: Include tool usage info for debugging
+      toolsUsed: response.usage?.output_tokens ? 'Response generated' : 'No tools',
     });
+
   } catch (error) {
     console.error('OpenAI API error:', error);
+
+    // Enhanced error handling
+    if (error instanceof OpenAI.APIError) {
+      console.error('API Error Details:', {
+        status: error.status,
+        message: error.message,
+        type: error.type,
+      });
+
+      return NextResponse.json(
+        {
+          error: `OpenAI API Error: ${error.message}`,
+          statusCode: error.status,
+          type: error.type,
+        },
+        { status: error.status || 500 }
+      );
+    }
+
     const errorMessage = error instanceof Error ? error.message : 'Failed to generate response';
     return NextResponse.json(
       { error: errorMessage },
