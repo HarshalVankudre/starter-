@@ -2,15 +2,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
 import prisma from '@/lib/prisma';
+import { getCurrentUser, unauthorizedResponse } from '@/lib/session'; // Import helpers
 
-// Validate API key - NEVER hardcode it!
+// ... (Keep existing OpenAI setup and SYSTEM_INSTRUCTIONS) ...
 const key = process.env.OPENAI_API_KEY?.trim();
 if (!key) {
   throw new Error("❌ OPENAI_API_KEY is missing from .env file");
 }
-
-const client = new OpenAI({ apiKey: "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" });
-
+const client = new OpenAI({ apiKey: "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\n" });
 
 type MessageType = {
   id: string;
@@ -20,7 +19,6 @@ type MessageType = {
   createdAt: Date;
 };
 
-// System instructions for the assistant
 const SYSTEM_INSTRUCTIONS = `Du bist ein Experten-Dokumentenassistent, der umfassende, detaillierte Erklärungen liefert. Befolge diese Regeln strikt:
 
 HAUPTROLLE:
@@ -64,25 +62,38 @@ WEBSUCHE-VERWENDUNG:
 - Sage klar: "Da dies nicht in den Dokumenten war, habe ich im Web gesucht und gefunden..."
 - Zitiere alle Webquellen ordnungsgemäß mit Kontext
 
-Merke: Umfassende, detaillierte Genauigkeit ist von höchster Bedeutung. Liefere so viele relevante Details wie möglich und bewahre dabei faktische Genauigkeit.`;
+Merke: Umfassende, detaillierte Genauigkeit ist von höchster Bedeutung. Liefere so viele relevante Details wie möglich und bewahre dabei faktische Genauigkeit.`;; // Keep your existing instructions
+
 
 export async function POST(req: NextRequest) {
+  const user = await getCurrentUser();
+  if (!user?.id) return unauthorizedResponse();
+
   try {
     const { prompt, conversationId } = await req.json();
 
     if (!prompt?.trim()) {
-      return NextResponse.json(
-        { error: 'Prompt is required' },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'Prompt is required' }, { status: 400 });
+    }
+    if (!conversationId) {
+      return NextResponse.json({ error: 'Conversation ID is required' }, { status: 400 });
     }
 
-    if (!conversationId) {
-      return NextResponse.json(
-        { error: 'Conversation ID is required' },
-        { status: 400 }
-      );
+    // --- Authorization Check ---
+    // Verify the conversation belongs to the current user before proceeding
+    const conversation = await prisma.conversation.findFirst({
+      where: {
+        id: conversationId,
+        userId: user.id, // Ensure it belongs to the logged-in user
+      },
+      select: { id: true }, // Only need to confirm existence
+    });
+
+    if (!conversation) {
+      return NextResponse.json({ error: 'Conversation not found or access denied' }, { status: 404 });
     }
+    // --- End Authorization Check ---
+
 
     // Save user message to database
     await prisma.message.create({
@@ -95,14 +106,13 @@ export async function POST(req: NextRequest) {
 
     // Get recent conversation history (limit to prevent token overflow)
     const messages = await prisma.message.findMany({
-      where: { conversationId },
+      where: { conversationId }, // No need for userId here as we checked conversation ownership
       orderBy: { createdAt: 'asc' },
-      take: 15,
+      take: 15, // Keep the limit
     });
 
+    // ... (Keep the rest of your logic for building fullInput, calling OpenAI, saving assistant message, and updating conversation timestamp) ...
     let fullInput = '';
-
-    // Add conversation history if exists
     if (messages.length > 1) {
       fullInput += '=== CONVERSATION HISTORY ===\n';
       messages.slice(0, -1).forEach((msg: MessageType) => {
@@ -110,32 +120,28 @@ export async function POST(req: NextRequest) {
       });
       fullInput += '=== END HISTORY ===\n\n';
     }
-
-    // Add current user message
     fullInput += `USER: ${prompt}\n\nASSISTANT:`;
 
-    // Call OpenAI Responses API with proper configuration
     const response = await client.responses.create({
-      model: "gpt-4o-mini", // Use gpt-4o or gpt-4o-mini for responses API
-      instructions: SYSTEM_INSTRUCTIONS, // System-level behavior instructions
-      input: fullInput,
-      temperature: 0.2, // Lower temperature = more focused and factual responses
-      max_output_tokens: 4096, // Allow longer, more detailed responses
-      tools: [
-        {
-          type: "file_search",
-          vector_store_ids: ["vs_68f523d8f20081918a7a6e746e17bbbb"],
-        },
-        {
-          type: "web_search",
-        },
-      ],
+        model: "gpt-4o-mini",
+        instructions: SYSTEM_INSTRUCTIONS,
+        input: fullInput,
+        temperature: 0.2,
+        max_output_tokens: 4096,
+        tools: [
+            {
+                type: "file_search",
+                // Ensure this vector store ID is appropriate or remove if not needed per-user
+                vector_store_ids: ["vs_68f523d8f20081918a7a6e746e17bbbb"],
+            },
+            {
+                type: "web_search",
+            },
+        ],
     });
 
-    // Extract the response text
     const aiResponse = response.output_text || 'No response generated';
 
-    // Save assistant message to database
     const assistantMessage = await prisma.message.create({
       data: {
         role: 'assistant',
@@ -144,45 +150,30 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // Update conversation's updatedAt timestamp
     await prisma.conversation.update({
       where: { id: conversationId },
       data: { updatedAt: new Date() },
     });
 
+
     return NextResponse.json({
       success: true,
       output: aiResponse,
       messageId: assistantMessage.id,
-      // Optional: Include tool usage info for debugging
       toolsUsed: response.usage?.output_tokens ? 'Response generated' : 'No tools',
     });
 
   } catch (error) {
+     // ... (Keep your existing error handling) ...
     console.error('OpenAI API error:', error);
-
-    // Enhanced error handling
     if (error instanceof OpenAI.APIError) {
-      console.error('API Error Details:', {
-        status: error.status,
-        message: error.message,
-        type: error.type,
-      });
-
+      console.error('API Error Details:', { status: error.status, message: error.message, type: error.type });
       return NextResponse.json(
-        {
-          error: `OpenAI API Error: ${error.message}`,
-          statusCode: error.status,
-          type: error.type,
-        },
+        { error: `OpenAI API Error: ${error.message}`, statusCode: error.status, type: error.type },
         { status: error.status || 500 }
       );
     }
-
     const errorMessage = error instanceof Error ? error.message : 'Failed to generate response';
-    return NextResponse.json(
-      { error: errorMessage },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 }
