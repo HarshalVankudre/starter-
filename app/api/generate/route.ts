@@ -74,7 +74,7 @@ export async function POST(req: NextRequest) {
 
     // Get AI response
     const response = await client.responses.create({
-      model: "gpt-4o-mini",
+      model: "gpt-5-nano",
       input: fullContext,
        tools: [
         {
